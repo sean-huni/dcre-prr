@@ -1,0 +1,28 @@
+# 12FactorApp: committed working dev defaults; env overrides. (yml-only rule, configuration.md p19)
+spring:
+  threads:
+    virtual:
+      enabled: true
+  datasource:
+    # dcre_pay, NOT dcre_col: the payments split gives this family its own
+    # database, and that database is now the family discriminator.
+    url: ${DCRE_PAY_DB_URL:jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable}
+    username: ${DCRE_PAY_DB_USER:root}
+    password: ${DCRE_PAY_DB_PASSWORD:}
+  liquibase:
+    change-log: classpath:db/changelog/db.changelog-master.xml
+    # Per-service migration history (same isolation idea as PRR_BATCH_)
+    database-change-log-table: prr_databasechangelog
+    database-change-log-lock-table: prr_databasechangeloglock
+
+dcre:
+  exchange-root: ${DCRE_EXCHANGE_ROOT:../../../../../../infra/dcre-infra/exchange}
+  amount-scale: ${DCRE_AMOUNT_SCALE:2}
+  v1-enabled: ${DCRE_V1_ENABLED:false}
+  batch:
+    table-prefix: PRR_BATCH_
+  agtops-db-url: ${DCRE_AGTOPS_DB_URL:jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable}
+  agtops-db-user: ${DCRE_AGTOPS_DB_USER:root}
+  agtops-db-password: ${DCRE_AGTOPS_DB_PASSWORD:}
+  prr:
+    max-partitions: ${DCRE_PRR_MAX_PARTITIONS:5}

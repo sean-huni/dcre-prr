@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!--
+        The PAYMENTS spine, in dcre_pay. PRR is its single writer (R-04).
+
+        Raw + canonical identity columns per R-15; role-based account names per
+        R-32; amounts keep the raw digits alongside the config-scaled DECIMAL
+        while A-1 is open. BaseEntity's version/created_at/updated_at are
+        declared IN the createTable rather than bolted on by a later ALTER, so
+        this is one typed changeset instead of CRR's 001 + 003 pair, and every
+        body below is typed tags only (pure-XML rule, persistence.md).
+
+        tx_header carries NO flow column, deliberately. CRR needed one because a
+        single reader and a single database served both families (SCRUM-69). The
+        split makes the DATABASE the discriminator: a row in dcre_pay.tx_header
+        IS a payment, and there is nothing left to branch on.
+
+        Re-run safety uses onFail="CONTINUE", never MARK_RAN. MARK_RAN records
+        the skip permanently, so a database that was merely NOT-YET-ready at the
+        moment of the check never gets the change at all; that shape has already
+        cost this project two defects. CONTINUE leaves the changeset unlogged and
+        re-evaluated on the next run, which is the behaviour a bootstrap guard
+        actually wants.
+    -->
+    <changeSet id="prr-001-tx-header" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not><tableExists tableName="tx_header"/></not>
+        </preConditions>
+        <createTable tableName="tx_header">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="arrival_id" type="UUID">
+                <constraints nullable="false" unique="true" uniqueConstraintName="uq_pay_header_arrival"/>
+            </column>
+            <column name="msg_id_raw" type="VARCHAR(35)"><constraints nullable="false"/></column>
+            <column name="msg_id" type="VARCHAR(35)"><constraints nullable="false"/></column>
+            <column name="created_ts" type="VARCHAR(14)"><constraints nullable="false"/></column>
+            <column name="tx_count" type="INT"><constraints nullable="false"/></column>
+            <column name="initg_pty" type="VARCHAR(35)"><constraints nullable="false"/></column>
+            <column name="business_date" type="VARCHAR(8)"><constraints nullable="false"/></column>
+            <column name="client_token" type="VARCHAR(16)"/>
+            <column name="layout_version" type="INT"><constraints nullable="false"/></column>
+            <!-- BaseEntity (configuration.md point 20). -->
+            <column name="version" type="BIGINT" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <rollback>
+            <dropTable tableName="tx_header"/>
+        </rollback>
+    </changeSet>
+
+    <changeSet id="prr-001-tx-entry" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not><tableExists tableName="tx_entry"/></not>
+        </preConditions>
+        <createTable tableName="tx_entry">
+            <column name="id" type="UUID" defaultValueComputed="gen_random_uuid()">
+                <constraints primaryKey="true" nullable="false"/>
+            </column>
+            <column name="arrival_id" type="UUID"><constraints nullable="false"/></column>
+            <column name="sequence" type="INT"><constraints nullable="false"/></column>
+            <column name="record_type" type="VARCHAR(2)"><constraints nullable="false"/></column>
+            <column name="e2e_raw" type="VARCHAR(35)"><constraints nullable="false"/></column>
+            <column name="e2e" type="VARCHAR(35)"><constraints nullable="false"/></column>
+            <column name="creditor_account" type="VARCHAR(23)"><constraints nullable="false"/></column>
+            <column name="contract_ref" type="VARCHAR(14)"/>
+            <column name="currency" type="VARCHAR(3)"><constraints nullable="false"/></column>
+            <column name="amount_raw" type="VARCHAR(15)"><constraints nullable="false"/></column>
+            <column name="amount" type="DECIMAL(18,2)"><constraints nullable="false"/></column>
+            <column name="branch_code" type="VARCHAR(11)"/>
+            <column name="debtor_name" type="VARCHAR(35)"/>
+            <column name="debtor_account" type="VARCHAR(23)"/>
+            <column name="acc_type_seq" type="VARCHAR(8)"/>
+            <!-- M10: the canonical payment-to-mandate link, carried by DETAIL_V3
+                 (204 = V2 body + trailing mandate_ref 35). NULL for V1/V2 books,
+                 which have no such field at all. -->
+            <column name="mandate_ref" type="VARCHAR(35)"/>
+            <!-- R-41 content identity: SHA-256 over the essential business
+                 fields, so a re-keyed copy of the same money movement clashes. -->
+            <column name="content_hash" type="CHAR(64)"/>
+            <!-- BaseEntity (configuration.md point 20). -->
+            <column name="version" type="BIGINT" defaultValueNumeric="0">
+                <constraints nullable="false"/>
+            </column>
+            <column name="created_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+            <column name="updated_at" type="TIMESTAMPTZ" defaultValueComputed="now()">
+                <constraints nullable="false"/>
+            </column>
+        </createTable>
+        <rollback>
+            <dropTable tableName="tx_entry"/>
+        </rollback>
+    </changeSet>
+
+    <!-- The R-05 idempotency key: the FULL business identity of a spine row.
+         CRDB's UPSERT resolves on the PRIMARY KEY only, so the writer's
+         INSERT ... ON CONFLICT (arrival_id, sequence) needs this constraint to
+         exist or a restarted chunk duplicates instead of rewriting. -->
+    <changeSet id="prr-001-tx-entry-identity" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not>
+                <indexExists tableName="tx_entry" indexName="uq_pay_entry_arrival_sequence"/>
+            </not>
+        </preConditions>
+        <addUniqueConstraint tableName="tx_entry" columnNames="arrival_id, sequence"
+                             constraintName="uq_pay_entry_arrival_sequence"/>
+        <rollback>
+            <dropUniqueConstraint tableName="tx_entry"
+                                  constraintName="uq_pay_entry_arrival_sequence"/>
+        </rollback>
+    </changeSet>
+
+    <!-- (arrival_id, content_hash, sequence): PTV's per-arrival window dup scan
+         partitions by content_hash and orders by sequence, fully covered. -->
+    <changeSet id="prr-001-tx-entry-content-hash-index" author="dcre">
+        <preConditions onFail="CONTINUE">
+            <not>
+                <indexExists tableName="tx_entry" indexName="idx_pay_entry_arrival_content_hash"/>
+            </not>
+        </preConditions>
+        <createIndex tableName="tx_entry" indexName="idx_pay_entry_arrival_content_hash">
+            <column name="arrival_id"/>
+            <column name="content_hash"/>
+            <column name="sequence"/>
+        </createIndex>
+        <rollback>
+            <dropIndex tableName="tx_entry" indexName="idx_pay_entry_arrival_content_hash"/>
+        </rollback>
+    </changeSet>
+
+</databaseChangeLog>

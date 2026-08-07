@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<databaseChangeLog
+        xmlns="http://www.liquibase.org/xml/ns/dbchangelog"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://www.liquibase.org/xml/ns/dbchangelog
+        http://www.liquibase.org/xml/ns/dbchangelog/dbchangelog-latest.xsd">
+
+    <!-- PRR owns dcre_pay. This is a NEW database, so the spine arrives as one
+         typed changeset rather than as CRR's six-file history of retrofits, and
+         the collections-only ones (flow column, its backfill, its NOT NULL) have
+         no successor here at all: there is no flow column to add. -->
+    <include file="db/changelog/2026/08/001-pay-spine.xml"/>
+    <include file="db/changelog/2026/08/002-batch-metadata.xml"/>
+
+</databaseChangeLog>
