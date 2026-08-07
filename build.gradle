@@ -15,7 +15,7 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-jdbc'
     implementation 'org.springframework.boot:spring-boot-starter-data-jdbc'
     // The copybook layout tables and the fixed-width reader: a shared DEPENDENCY,
-    // imported per service. prr, prr and mrr stay separate deployables.
+    // imported per service. crr, prr and mrr stay separate deployables.
     implementation 'za.co.fnb.dcre:platform-copybook:0.2.0'
     implementation 'za.co.fnb.dcre:platform-persistence:0.1.0'
     implementation 'org.liquibase:liquibase-core'
@@ -32,3 +32,19 @@ dependencies {
     testImplementation 'org.junit.platform:junit-platform-suite'
 }
 test { useJUnitPlatform() }
+
+/*
+ * Paketo buildpacks, NOT a hand-rolled prod JVM Dockerfile (estate mandate:
+ * "ALL backend images via Paketo, never a prod JVM Dockerfile; BP_JVM_VERSION=25
+ * mandatory"). PRR adopts it because a brand-new repo with zero tags and no
+ * published image is the cheapest adoption point in the fleet: there is no
+ * running image to keep byte-compatible and no rollback to preserve. The rest of
+ * the fleet still ships CRR's hand-rolled Dockerfile and migrates separately.
+ *
+ * imageName has no registry prefix on purpose: dcre images are loaded straight
+ * into the kind node with `kind load docker-image`, matching dcre-<svc>:<tag>.
+ */
+tasks.named('bootBuildImage') {
+    imageName = "dcre-prr:${project.version}"
+    environment = ['BP_JVM_VERSION': '25']
+}

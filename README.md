@@ -4,7 +4,16 @@ Payments Request Reader: boundary stage that ingests OnHost ENDO copybook files 
 
 ## What it does
 
-PRR is the first stage of the ENDO payments request DAG. OnHost drops a fixed-width copybook file into the per-client exchange (`onhost-req-endo/in`), AGT registers the arrival and launches PRR as a short-lived Kubernetes Job with `arrival.id` as the identifying JobParameter (R-16). PRR parses the header, runs the file-fatal structural tier (R-19), then ingests every detail record; it is the single writer of the payments spine (R-04), and every downstream stage transitions via the database, never via files (R-30).
+PRR is the first stage of the ENDO payments request DAG:
+
+```
+ENDO payments  onhost-req-endo:  PRR -> PTV -> PAI -> PIR      (immediate: no CDE, no mandate gate)
+DC collections onhost-req:       CRR -> CTV -> { CDE || CIR }  (CDE future-dates the work)
+```
+
+PTV, PAI and PIR are the payments-side counterparts of CTV, AIS and CIR; none of them exists yet, and each
+needs its own task (design sequencing steps 3 through 10). Until they do, ENDO arrivals continue down the
+collections DAG. OnHost drops a fixed-width copybook file into the per-client exchange (`onhost-req-endo/in`), AGT registers the arrival and launches PRR as a short-lived Kubernetes Job with `arrival.id` as the identifying JobParameter (R-16). PRR parses the header, runs the file-fatal structural tier (R-19), then ingests every detail record; it is the single writer of the payments spine (R-04), and every downstream stage transitions via the database, never via files (R-30).
 
 ### Why this repo exists: the payments split
 
@@ -12,12 +21,19 @@ PRR was forked from [dcre-crr](https://github.com/sean-huni/dcre-crr) and then R
 
 Before the split, one reader and one database served both families: AGT passed a `flow` launch argument, CRR stamped `tx_header.flow` as `COL` or `PAY`, and downstream arms selected on that column (SCRUM-69). **PRR carries no flow discriminator at all.** The database is the discriminator now: a row in `dcre_pay.tx_header` IS a payment, so `tx_header` here has no `flow` column, `HeaderService` takes no `flow` parameter, and there is no `COL` branch to take.
 
-Two tests enforce that, and both have been seen red:
+Five assertions across two test classes enforce that, each seen red on its own. They deliberately attack the concept from four different directions, because a scan for string literals is satisfied by DELETING three literals rather than by removing the concept: in CRR the flow token appears in four main sources and those three literals live in only one of them, so a partial strip leaving the entity field, the upsert column or the job parameter would still have gone green.
 
-- `PayFlowOnlyTest` walks `src/main/java` and fails if any source carries `FLOW_PAY`, `validatedFlow` or the literal `"COL"`.
-- The BDD scenario *"The payments spine has no flow column to discriminate on"* asserts against `information_schema`, with a control assertion on `arrival_id` so a zero cannot be a mistyped table name.
+| Assertion | What it closes |
+|---|---|
+| `PayFlowOnlyTest.prrCarriesNoFlowDiscriminator` | the constants and the validator, by name, in `src/main/java` |
+| `PayFlowOnlyTest.spineHeaderDeclaresNoFlowField` | the PERSISTED shape, by reflection on `TxHeaderEntity`, so no comment rewording can hide it |
+| `PayFlowOnlyTest.noResourceReintroducesAFlowColumnOrKey` | a Liquibase changeset or a yml key putting the column back, which the java-only walk cannot reach |
+| `PayFlowOnlyTest.noSourceReadsAFlowJobParameter` | the LAUNCH surface, so a launcher cannot hand PRR a flow that is silently ignored |
+| BDD *"The payments spine has no flow column to discriminate on"* | the live SCHEMA, via `information_schema`, with a control assertion on `arrival_id` |
 
-The copybook LAYOUT is deliberately unchanged. ENDO payment books and DC collection books are the same OnHost copybook (109-content header, V1 161 / V2 169 / V3 204 details), which is exactly why a launch argument could once route an ENDO arrival into CRR. What the split changed is where the rows land, not how the bytes are cut. See `PaymentRecords`.
+The copybook LAYOUT is deliberately unchanged. ENDO payment books and DC collection books are the same OnHost copybook (109-content header, V1 161 / V2 169 / V3 204 details), which is exactly why a launch argument could once route an ENDO arrival into CRR. What the split changed is where the rows land, not how the bytes are cut.
+
+The authority is the fixture toolkit: `generate_dcre_copybook.py` takes `--flow dc|endo` and documents that "Physical DC/ENDO distinction is provenance-level (MFT route), so it lives in the manifest only." A payments-specific layout table would have been a fabricated contract. See `PaymentRecords`, and `EndoDcIdentityTest`, which commits BOTH books and asserts they slice and persist identically, so the claim goes red the day OnHost genuinely diverges instead of quietly becoming false.
 
 ## Architecture and principles
 
@@ -52,7 +68,7 @@ The shared `OutcomeSeamListener` writes the business-verdict seam file (SYNTHETI
 
 PRR owns `dcre_pay` outright. Liquibase owns the schema, with per-service history tables (`prr_databasechangelog` / `prr_databasechangeloglock`):
 
-- `2026/08/001-pay-spine.xml`: `tx_header` (UNIQUE arrival_id; raw + canonical msg_id per R-15; **no flow column**) and `tx_entry` (UNIQUE arrival_id/sequence; amount_raw kept alongside the config-scaled DECIMAL while A-1 is open; `mandate_ref` for the M10 payment-to-mandate link; `content_hash` plus the covering index `(arrival_id, content_hash, sequence)`). Pure typed XML, BaseEntity columns declared in the `createTable` rather than bolted on by a later ALTER, so this is one changeset where CRR needed four.
+- `2026/08/001-pay-spine.xml`: `tx_header` (UNIQUE arrival_id; raw + canonical msg_id per R-15; **no flow column**) and `tx_entry` (UNIQUE arrival_id/sequence; amount_raw kept alongside the config-scaled DECIMAL while A-1 is open; `mandate_ref`, a V3 field of the shared book that ENDO does not populate (M10 is the COLLECTION-to-mandate link and the mandate gate is DC-only per R-19, so expect it NULL on every payment row); `content_hash` plus the covering index `(arrival_id, content_hash, sequence)`). Pure typed XML, BaseEntity columns declared in the `createTable` rather than bolted on by a later ALTER, so this is one changeset where CRR needed four.
 - `2026/08/002-batch-metadata.xml`: Liquibase-owned copy of the Spring Batch 6.0.4 postgres DDL (via `sqlFile`, vendored as `batch-metadata-prr.sql`), prefixed `PRR_BATCH_`, EXIT_MESSAGE widened to TEXT so CRDB-driver cause chains are never truncated (A-39b).
 
 Every changeset is guarded `<preConditions onFail="CONTINUE">`, never `MARK_RAN`. MARK_RAN records the skip permanently, so a database that was merely not-yet-ready at the moment of the check never gets the change at all; CONTINUE leaves the changeset unlogged and re-evaluated on the next run, which is what a bootstrap guard actually wants.
@@ -102,33 +118,37 @@ Env over committed dev defaults (precedence: yml default < environment).
 ./gradlew clean build
 ```
 
-38 tests, Docker required: integration tests run on Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3`.
+46 tests, Docker required: integration tests run on Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3`.
 
-- `PayFlowOnlyTest`: no flow discriminator survives anywhere in `src/main/java`.
-- `PrrJobTest`: the V2 sample parses into 1 header + 30 entries with MoneyText scaling; the same identity refuses a second run without duplicating (R-05/R-16); a V1 file completes as FILE_FATAL with zero details persisted; an unpadded-header file and a non-UTF-8 byte both ingest byte-exactly; a V3 book carries `mandate_ref` while a V2 book leaves it NULL; the outcome seam is byte-exact for both verdicts.
+- `PayFlowOnlyTest` (4): the flow concept is gone from the sources, the entity's declared fields, the resources and the launch surface. See the table above.
+- `PrrJobTest` (10): the DC V2 sample parses into 1 header + 30 entries with MoneyText scaling; the same identity refuses a second run without duplicating (R-05/R-16); a V1 file completes as FILE_FATAL with zero details persisted; an unpadded-header file and a non-UTF-8 byte both ingest byte-exactly; a V3 book carries `mandate_ref` while a V2 book leaves it NULL; the outcome seam is byte-exact for both verdicts; and the ENDO book ingests to 1 header + 12 entries whose shared columns are byte-equal to the DC ingest's, with every `mandate_ref` NULL.
+- `EndoDcIdentityTest` (4): both books read through the same resolver. Record 0 of each is 169 bytes and still resolves to `Layouts.HEADER`, which only its INDEX can decide; the two headers are byte-identical except `tx_count`; detail 1 slices identically across both. The fields the fixtures deliberately differ on are asserted DIFFERENT, so none of the equalities can pass by both paths reading one file.
 - `PrrPartitionDeterminismTest`: the same fixture under `dcre.prr.max-partitions` 1 vs 5 in two `@Nested` contexts yields identical `(sequence, e2e, content_hash)` rows (R-41 determinism).
 - `PrrJobConfigRetryTest`: headerStep re-runs the tasklet on commit-time CRDB 40001 serialization aborts.
 - `LineRangePartitionerTest` / `FixedRecordRangeReaderTest`: byte-offset ranges, missing-final-newline, ragged-length and wrong-separator fail-closed, mid-range restart.
 - `SpineWriterTest`: content hash covers the essential business fields only; V3 `mandate_ref` mapping.
 - Cucumber BDD suite (`CucumberSuiteTest`, `features/prr_boundary_reader.feature`, tag `@prr`): business-language scenarios over the real job + CockroachDB, including the no-flow-column schema invariant.
 
-Fixtures: `src/test/resources/dcre_copybook_v{1,2,3}_*.txt`. They keep their `_dc_` filenames because they are the byte-identical OnHost copybook both families use; renaming them would imply a payments-specific layout that does not exist.
+Fixtures: `src/test/resources/dcre_copybook_v{1,2,3}_*.txt`, byte-identical copies of the toolkit samples, including `dcre_copybook_v2_endo_sample.txt` and its manifest. The DC files keep their `_dc_` names because they ARE the byte-identical OnHost copybook both families use; renaming them would imply a payments-specific layout that does not exist. Carrying only the DC ones would have been worse: a fixture set with one value in the field that carries the distinction cannot exercise what that field drives, which is why the ENDO book is committed rather than merely referenced.
 
 ## Local cluster deployment
 
 ```bash
-./gradlew bootJar
-docker build --platform linux/amd64 -t dcre-prr:2.1.1 .
-kind load docker-image --name dcre-dev dcre-prr:2.1.1
+./gradlew bootBuildImage          # -> dcre-prr:2.0, via Paketo buildpacks
+kind load docker-image --name dcre-dev dcre-prr:2.0
 ```
 
-Image base: `eclipse-temurin:25-jre-alpine`. Image tags follow the fleet release tags (digits-only SemVer); the Gradle project version inside the jar name stays `2.0`, matching the rest of the fleet.
+**PRR builds its image with Paketo buildpacks and ships no Dockerfile.** The estate mandate is that all backend images go through Paketo, never a hand-rolled prod JVM Dockerfile, and a brand-new repo with zero tags and no published image is the cheapest adoption point in the fleet: nothing has to stay byte-compatible and there is no rollback to preserve. The rest of the DCRE fleet still ships CRR's hand-rolled `eclipse-temurin:25-jre-alpine` Dockerfile and migrates separately; PRR is the exemplar that migration follows.
+
+`BP_JVM_VERSION=25` is set in `build.gradle` and verified in the built image: `Starting PrrApplication v2.0 using Java 25.0.4`. The image is `linux/arm64`, matching the `dcre-dev` kind nodes; do NOT force `--platform linux/amd64` for this cluster, its nodes are arm64 and an amd64 image fails at pull time with `no match for platform in manifest`. Paketo's image is larger than the hand-rolled one (680MB vs 420MB locally), which is the cost of the reproducible build and the SBOM.
+
+The image is tagged from the Gradle project version, which stays `2.0` to match uniform fleet versioning. Release image tags are cut by the fleet release process; this repo has no tags yet, so there is no `2.x.y` image tag to build here until it does.
 
 AGT launches PRR as an ephemeral K8s Job per registered ENDO arrival: the JobParameters arrive as program args and `JOB_NAME` is set in the Job env. **The AGT wiring and the emission-gate flip are NOT part of this phase**; PRR is buildable and verifiable standalone, and AGT still routes ENDO arrivals to CRR until that work lands.
 
 ## Related repositories
 
 - Orchestrator: [dcre-agt](https://github.com/sean-huni/dcre-agt)
-- Collections request DAG: [dcre-crr](https://github.com/sean-huni/dcre-crr), [dcre-ctv](https://github.com/sean-huni/dcre-ctv), [dcre-cde](https://github.com/sean-huni/dcre-cde), [dcre-cir](https://github.com/sean-huni/dcre-cir), [dcre-ais](https://github.com/sean-huni/dcre-ais)
+- Request DAG stages: [dcre-crr](https://github.com/sean-huni/dcre-crr), [dcre-ctv](https://github.com/sean-huni/dcre-ctv), [dcre-cde](https://github.com/sean-huni/dcre-cde) (DC only), [dcre-cir](https://github.com/sean-huni/dcre-cir), [dcre-ais](https://github.com/sean-huni/dcre-ais) (payments only)
 - Platform libs: [dcre-platform-model](https://github.com/sean-huni/dcre-platform-model), [dcre-platform-files](https://github.com/sean-huni/dcre-platform-files), [dcre-platform-batch](https://github.com/sean-huni/dcre-platform-batch), [dcre-platform-persistence](https://github.com/sean-huni/dcre-platform-persistence)
 - Support: [dcre-infra](https://github.com/sean-huni/dcre-infra), [dcre-fixture-toolkit](https://github.com/sean-huni/dcre-fixture-toolkit), [dcre-design-register](https://github.com/sean-huni/dcre-design-register)

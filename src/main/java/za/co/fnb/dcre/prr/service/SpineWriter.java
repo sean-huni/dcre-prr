@@ -23,9 +23,13 @@ import java.util.UUID;
  * ingest is deterministic (R-41). Each row carries a SHA-256 content hash
  * over the essential business fields for CTV's in-file dup scan (R-41).
  * V1 (161) fails closed unless dcre.v1-enabled (A-2). V3 (204) is the V2 body
- * plus a trailing mandate_ref(35), the canonical payment-to-mandate link
- * (M10); mandate_ref stays NULL for V1/V2 books and is excluded from the
- * content hash (it is a link, not part of the money-movement identity).
+ * plus a trailing mandate_ref(35), the canonical COLLECTION-to-mandate link
+ * (M10). It is mapped here because DETAIL_V3 is one physical layout shared by
+ * both families, NOT because a payment can carry a mandate: the mandate gate is
+ * DC-only (R-19) and ENDO carries no bank-registered mandates, so an ENDO row's
+ * mandate_ref is expected NULL. It stays NULL for V1/V2 books, which have no
+ * such field, and is excluded from the content hash either way (it is a link,
+ * not part of the money-movement identity).
  */
 public class SpineWriter {
 
@@ -99,8 +103,9 @@ public class SpineWriter {
         }
     }
 
-    /** A blank V3 mandate_ref means the payment targets no mandate; store
-     *  that as NULL so a missing link reads the same as a V1/V2 row (absent). */
+    /** A blank V3 mandate_ref means the record targets no mandate, which is
+     *  every ENDO record; store that as NULL so a missing link reads the same as
+     *  a V1/V2 row (absent). */
     private static String emptyToNull(String value) {
         return value.isEmpty() ? null : value;
     }

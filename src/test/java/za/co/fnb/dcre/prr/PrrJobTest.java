@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest(properties = {"spring.batch.job.enabled=false"})
@@ -95,6 +96,7 @@ class PrrJobTest {
 
     static final UUID ARRIVAL = UUID.randomUUID();
     static final UUID V3_ARRIVAL = UUID.randomUUID();
+    static final UUID ENDO_ARRIVAL = UUID.randomUUID();
 
     static {
         // create the metadata database before the context wires the batch DS
@@ -232,7 +234,10 @@ class PrrJobTest {
     @Order(8)
     void v3BookCarriesMandateRefWhileV2StaysNull() throws Exception {
         // M10: DETAIL_V3 (204 = V2 body + trailing mandate_ref 35) is selected
-        // by LRECL; the canonical payment-to-mandate link lands on tx_entry.
+        // by LRECL. mandate_ref is the COLLECTION-to-mandate link (mandate gate
+        // is DC-only, R-19); it is mapped here only because DETAIL_V3 is one
+        // physical layout shared by both families. See EndoDcIdentityTest for
+        // the ENDO side, where every mandate_ref is NULL.
         JobExecution run = jobOperator.start(prrJob,
                 params(V3_ARRIVAL, "dcre_copybook_v3_dc_sample.txt", "FNBRF01_DCRERF2026071112000003.txt"));
         assertEquals(BatchStatus.COMPLETED, run.getStatus());
@@ -288,5 +293,60 @@ class PrrJobTest {
         String debtorName = jdbc.queryForObject(
                 "SELECT debtor_name FROM tx_entry WHERE arrival_id=? AND sequence=1", String.class, arrival);
         assertTrue(debtorName.contains("\u00E9"), "expected byte-transparent e-acute, got: " + debtorName);
+    }
+
+    /**
+     * Review finding I3: the ENDO book, ingested by the same job into the same
+     * spine. Every other fixture in this repo is the collections file, so before
+     * this test the "one physical layout, two families" claim that justifies
+     * keeping the shared Layouts tables was prose only.
+     *
+     * <p>EndoDcIdentityTest proves the two books SLICE identically at the reader.
+     * This proves the whole job persists them identically: the columns the two
+     * fixtures share arrive byte-equal in the database, having gone through
+     * layout resolution, the partitioner, the range reader and the upsert.
+     */
+    @Test
+    @Order(10)
+    void endoBookIngestsIdenticallyToTheDcBook() throws Exception {
+        JobExecution run = jobOperator.start(prrJob,
+                params(ENDO_ARRIVAL, "dcre_copybook_v2_endo_sample.txt",
+                        "FNBRF01_DCRERF2026071112000004.txt"));
+        assertEquals(BatchStatus.COMPLETED, run.getStatus());
+
+        assertEquals(1, jdbc.queryForObject(
+                "SELECT count(*) FROM tx_header WHERE arrival_id=?", Integer.class, ENDO_ARRIVAL));
+        assertEquals(12, jdbc.queryForObject(
+                "SELECT count(*) FROM tx_entry WHERE arrival_id=?", Integer.class, ENDO_ARRIVAL));
+
+        // The shared columns of detail 1, compared across the two ingests. The DC
+        // row is the one written by parsesDcSampleIntoSpine (@Order(1)).
+        String projection = """
+                SELECT record_type || '|' || e2e || '|' || creditor_account || '|' || currency
+                       || '|' || branch_code || '|' || debtor_name || '|' || debtor_account
+                       || '|' || acc_type_seq
+                FROM tx_entry WHERE arrival_id=? AND sequence=1""";
+        String dcRow = jdbc.queryForObject(projection, String.class, ARRIVAL);
+        String endoRow = jdbc.queryForObject(projection, String.class, ENDO_ARRIVAL);
+        assertEquals(dcRow, endoRow,
+                "the same physical record must persist to the same column values whichever"
+                        + " family's book carried it");
+
+        // Anti-vacuity: the two books are genuinely different files. Without this
+        // the comparison above would also pass if both arrivals read one fixture.
+        assertNotEquals(
+                jdbc.queryForObject("SELECT amount_raw FROM tx_entry WHERE arrival_id=? AND sequence=1",
+                        String.class, ARRIVAL),
+                jdbc.queryForObject("SELECT amount_raw FROM tx_entry WHERE arrival_id=? AND sequence=1",
+                        String.class, ENDO_ARRIVAL),
+                "the fixtures carry different money, so the equality above is a real one");
+
+        // ENDO carries no bank-registered mandates: the mandate gate is DC-only
+        // (R-19), and the toolkit forbids mandate faults on an ENDO book. The V3
+        // mandate_ref column exists because the LAYOUT is shared, not because a
+        // payment can carry a mandate, so every ENDO row must leave it NULL.
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT count(*) FROM tx_entry WHERE arrival_id=? AND mandate_ref IS NOT NULL",
+                Integer.class, ENDO_ARRIVAL));
     }
 }
