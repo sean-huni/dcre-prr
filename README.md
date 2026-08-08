@@ -22,9 +22,12 @@ only stage with no payments counterpart, which is what "immediate" means. Both w
 drop and neither must be: CRW and PRW generate and write the Fintegrate request to the directory, so
 a leg rendered without its writer reads as a responder and nothing else. Each arm forks into a
 writer branch and a responder branch, payments after PAI and collections after CTV, with CDE sitting
-between the collections fork and CRW. None of these four stages exists yet, and each needs its own task
-(design sequencing steps 3 through 10; step 4 exists solely to build PRW on an extracted
-`platform-fintegrate`). Until they land, ENDO arrivals continue down the collections DAG.
+between the collections fork and CRW. None of these four stages exists yet. Their build tasks are design
+sequencing steps 3 through 5 (PTV and PAI at 3, PRW at 4 on an extracted `platform-fintegrate`, PIR
+at 5); steps 6 through 10 are the broader arc that follows, namely the AGT wiring, the end-to-end
+proof under the chaos gate, the response leg with its own stage codes, the collections renames, and
+deleting payments code from collections. Until they land, ENDO arrivals continue down the
+collections DAG.
 
 OnHost drops a fixed-width copybook file into the per-client exchange (`onhost-req-endo/in`), AGT registers the arrival and launches PRR as a short-lived Kubernetes Job with `arrival.id` as the identifying JobParameter (R-16). PRR parses the header, runs the file-fatal structural tier (R-19), then ingests every detail record; it is the single writer of the payments spine (R-04), and every downstream stage transitions via the database, never via files (R-30).
 
@@ -81,7 +84,7 @@ The shared `OutcomeSeamListener` writes the business-verdict seam file (SYNTHETI
 
 PRR owns `dcre_pay` outright. Liquibase owns the schema, with per-service history tables (`prr_databasechangelog` / `prr_databasechangeloglock`):
 
-- `2026/08/001-pay-spine.xml`: `tx_header` (UNIQUE arrival_id; raw + canonical msg_id per R-15; **no flow column**) and `tx_entry` (UNIQUE arrival_id/sequence; amount_raw kept alongside the config-scaled DECIMAL while A-1 is open; `mandate_ref`, a V3 field of the shared book that ENDO does not populate (M10 is the COLLECTION-to-mandate link and the mandate gate is DC-only per R-19, so expect it NULL on every payment row); `content_hash` plus the covering index `(arrival_id, content_hash, sequence)`). Pure typed XML, BaseEntity columns declared in the `createTable` rather than bolted on by a later ALTER, so this is one changeset where CRR needed four.
+- `2026/08/001-pay-spine.xml`: `tx_header` (UNIQUE arrival_id; raw + canonical msg_id per R-15; **no flow column**) and `tx_entry` (UNIQUE arrival_id/sequence; amount_raw kept alongside the config-scaled DECIMAL while A-1 is open; `mandate_ref`, a V3 field of the shared book that ENDO does not populate (M10 is the COLLECTION-to-mandate link and the mandate gate is DC-only per R-19, so expect it NULL on every payment row); `content_hash` plus the covering index `(arrival_id, content_hash, sequence)`). Pure typed XML, BaseEntity columns declared in the `createTable` rather than bolted on by a later ALTER, so this one FILE (four changesets) replaces the four CRR changelogs that between them build the same schema: `001-spine`, `003-layering`, `004-content-hash`, `006-mandate-ref`.
 - `2026/08/002-batch-metadata.xml`: Liquibase-owned copy of the Spring Batch 6.0.4 postgres DDL (via `sqlFile`, vendored as `batch-metadata-prr.sql`), prefixed `PRR_BATCH_`, EXIT_MESSAGE widened to TEXT so CRDB-driver cause chains are never truncated (A-39b).
 
 Every changeset is guarded `<preConditions onFail="CONTINUE">`, never `MARK_RAN`. MARK_RAN records the skip permanently, so a database that was merely not-yet-ready at the moment of the check never gets the change at all; CONTINUE leaves the changeset unlogged and re-evaluated on the next run, which is what a bootstrap guard actually wants.
@@ -134,7 +137,7 @@ Env over committed dev defaults (precedence: yml default < environment).
 46 tests, Docker required: integration tests run on Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3`.
 
 - `PayFlowOnlyTest` (4): the flow concept is gone from the sources, the entity's declared fields, the resources and the launch surface. See the table above.
-- `PrrJobTest` (10): the DC V2 sample parses into 1 header + 30 entries with MoneyText scaling; the same identity refuses a second run without duplicating (R-05/R-16); a V1 file completes as FILE_FATAL with zero details persisted; an unpadded-header file and a non-UTF-8 byte both ingest byte-exactly; a V3 book carries `mandate_ref` while a V2 book leaves it NULL; the outcome seam is byte-exact for both verdicts; and the ENDO book ingests to 1 header + 12 entries whose shared columns are byte-equal to the DC ingest's, with every `mandate_ref` NULL.
+- `PrrJobTest` (10): the DC V2 sample parses into 1 header + 30 entries with MoneyText scaling; the same identity refuses a second run without duplicating (R-05/R-16); a V1 file completes as FILE_FATAL with zero details persisted; an unpadded-header file and a non-UTF-8 byte both ingest byte-exactly; the V3 DC fixture carries `mandate_ref` while a V2 book leaves it NULL, which exercises the column mapping without contradicting the production expectation that ENDO rows never populate it; the outcome seam is byte-exact for both verdicts; and the ENDO book ingests to 1 header + 12 entries whose shared columns are byte-equal to the DC ingest's, with every `mandate_ref` NULL.
 - `EndoDcIdentityTest` (4): both books read through the same resolver. Record 0 of each is 169 bytes and still resolves to `Layouts.HEADER`, which only its INDEX can decide; the two headers are byte-identical except `tx_count`; detail 1 slices identically across both. The fields the fixtures deliberately differ on are asserted DIFFERENT, so none of the equalities can pass by both paths reading one file.
 - `PrrPartitionDeterminismTest`: the same fixture under `dcre.prr.max-partitions` 1 vs 5 in two `@Nested` contexts yields identical `(sequence, e2e, content_hash)` rows (R-41 determinism).
 - `PrrJobConfigRetryTest`: headerStep re-runs the tasklet on commit-time CRDB 40001 serialization aborts.
@@ -208,5 +211,5 @@ AGT launches PRR as an ephemeral K8s Job per registered ENDO arrival: the JobPar
 - Orchestrator: [dcre-agt](https://github.com/sean-huni/dcre-agt)
 - Request DAG stages: [dcre-crr](https://github.com/sean-huni/dcre-crr), [dcre-ctv](https://github.com/sean-huni/dcre-ctv), [dcre-cde](https://github.com/sean-huni/dcre-cde) (DC only), [dcre-crw](https://github.com/sean-huni/dcre-crw) (collections writer), [dcre-cir](https://github.com/sean-huni/dcre-cir), [dcre-ais](https://github.com/sean-huni/dcre-ais) (payments only)
 - Payments counterparts: `dcre-prr` (this repo). PTV, PAI, PRW and PIR have no repositories yet; they are design sequencing steps 3 through 5.
-- Platform libs: [dcre-platform-model](https://github.com/sean-huni/dcre-platform-model), [dcre-platform-files](https://github.com/sean-huni/dcre-platform-files), [dcre-platform-batch](https://github.com/sean-huni/dcre-platform-batch), [dcre-platform-persistence](https://github.com/sean-huni/dcre-platform-persistence)
+- Platform libs: [dcre-platform-model](https://github.com/sean-huni/dcre-platform-model), [dcre-platform-files](https://github.com/sean-huni/dcre-platform-files), [dcre-platform-batch](https://github.com/sean-huni/dcre-platform-batch), [dcre-platform-persistence](https://github.com/sean-huni/dcre-platform-persistence). `platform-copybook`, which this repo depends on directly, has NO remote and is deliberately unlinked: it lives only in the local `platform/` tree and publishes to Maven Local.
 - Support: [dcre-infra](https://github.com/sean-huni/dcre-infra), [dcre-fixture-toolkit](https://github.com/sean-huni/dcre-fixture-toolkit), [dcre-design-register](https://github.com/sean-huni/dcre-design-register)

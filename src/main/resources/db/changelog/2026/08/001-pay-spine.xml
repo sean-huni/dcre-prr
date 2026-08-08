@@ -12,8 +12,11 @@
         R-32; amounts keep the raw digits alongside the config-scaled DECIMAL
         while A-1 is open. BaseEntity's version/created_at/updated_at are
         declared IN the createTable rather than bolted on by a later ALTER, so
-        this is one typed changeset instead of CRR's 001 + 003 pair, and every
-        body below is typed tags only (pure-XML rule, persistence.md).
+        this ONE FILE replaces the four CRR changelogs that between them build the
+        same schema (001-spine, 003-layering, 004-content-hash, 006-mandate-ref),
+        and every body below is typed tags only (pure-XML rule, persistence.md).
+        CRR's 005-flow-column has no successor here at all: there is no flow
+        column to add, backfill or constrain.
 
         tx_header carries NO flow column, deliberately. CRR needed one because a
         single reader and a single database served both families (SCRUM-69). The
