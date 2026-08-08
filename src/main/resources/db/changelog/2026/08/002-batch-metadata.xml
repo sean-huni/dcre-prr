@@ -17,8 +17,18 @@
          which is the
          vendor-lock the pure-XML rule exists to prevent, not an instance of it.
          Same precedent as CRR 002 and MRR. Every CREATE carries IF NOT EXISTS,
-         so a pod SIGKILLed mid-migration re-runs the file safely. -->
+         so a pod SIGKILLed mid-migration re-runs the file safely; that is ALSO
+         why this changeset carries no precondition (A-81: one sqlFile creates
+         nine objects, and a precondition sampling one of them reads a
+         half-applied file as complete and skips the rest forever). -->
     <changeSet id="prr-002-batch-metadata" author="dcre">
+        <!-- A-82: the fleet's copy of this file gained IF NOT EXISTS after it had
+             already been applied, changing the enclosing changeset's checksum.
+             The escape hatch is kept here even though prr-002 has never run
+             anywhere, so a future edit to the vendored framework DDL cannot fail
+             validation on a database that already has PRR history. It is
+             APPLICABILITY that must stay preserved for this file, not the
+             byte-for-byte checksum. -->
         <validCheckSum>ANY</validCheckSum>
         <sqlFile path="db/changelog/2026/08/batch-metadata-prr.sql" splitStatements="true"/>
     </changeSet>

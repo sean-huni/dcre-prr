@@ -17,12 +17,16 @@ DC collections onhost-req:       CRR -> CTV -> { CDE -> CRW -> Fintegrate reques
                                  (CDE future-dates the work; CRW is the writer, CIR the responder)
 ```
 
-PTV, PAI, **PRW** and PIR are the payments-side counterparts of CTV, AIS, **CRW** and CIR. CDE is the
-only stage with no payments counterpart, which is what "immediate" means. Both writers are easy to
-drop and neither must be: CRW and PRW generate and write the Fintegrate request to the directory, so
-a leg rendered without its writer reads as a responder and nothing else. Each arm forks into a
-writer branch and a responder branch, payments after PAI and collections after CTV, with CDE sitting
-between the collections fork and CRW. None of these four stages exists yet. Their build tasks are design
+PTV, **PRW** and PIR are the payments-side counterparts of CTV, **CRW** and CIR. **PAI is not a
+counterpart of anything**: it already IS `ais`, under the wrong name, so step 3 renames and retargets
+it at `dcre_pay` rather than building it. `ais` is a payments stage today (it sits in `RouteDags.ENDO`,
+never in the DC route), which is why it is marked payments-only in the repository list below. CDE is
+the only collections stage with no payments counterpart, which is what "immediate" means. Both
+writers are easy to drop and neither must be: CRW and PRW generate and write the Fintegrate request
+to the directory, so a leg rendered without its writer reads as a responder and nothing else. Each
+arm forks into a writer branch and a responder branch, payments after PAI and collections after CTV,
+with CDE sitting between the collections fork and CRW. Of the four, only PAI exists today, as
+`dcre-ais`; PTV, PRW and PIR do not exist at all. Their tasks are design
 sequencing steps 3 through 5 (PTV and PAI at 3, PRW at 4 on an extracted `platform-fintegrate`, PIR
 at 5); steps 6 through 10 are the broader arc that follows, namely the AGT wiring, the end-to-end
 proof under the chaos gate, the response leg with its own stage codes, the collections renames, and
@@ -87,7 +91,7 @@ PRR owns `dcre_pay` outright. Liquibase owns the schema, with per-service histor
 - `2026/08/001-pay-spine.xml`: `tx_header` (UNIQUE arrival_id; raw + canonical msg_id per R-15; **no flow column**) and `tx_entry` (UNIQUE arrival_id/sequence; amount_raw kept alongside the config-scaled DECIMAL while A-1 is open; `mandate_ref`, a V3 field of the shared book that ENDO does not populate (M10 is the COLLECTION-to-mandate link and the mandate gate is DC-only per R-19, so expect it NULL on every payment row); `content_hash` plus the covering index `(arrival_id, content_hash, sequence)`). Pure typed XML, BaseEntity columns declared in the `createTable` rather than bolted on by a later ALTER, so this one FILE (four changesets) replaces the four CRR changelogs that between them build the same schema: `001-spine`, `003-layering`, `004-content-hash`, `006-mandate-ref`.
 - `2026/08/002-batch-metadata.xml`: Liquibase-owned copy of the Spring Batch 6.0.4 postgres DDL (via `sqlFile`, vendored as `batch-metadata-prr.sql`), prefixed `PRR_BATCH_`, EXIT_MESSAGE widened to TEXT so CRDB-driver cause chains are never truncated (A-39b).
 
-Every changeset is guarded `<preConditions onFail="CONTINUE">`, never `MARK_RAN`. MARK_RAN records the skip permanently, so a database that was merely not-yet-ready at the moment of the check never gets the change at all; CONTINUE leaves the changeset unlogged and re-evaluated on the next run, which is what a bootstrap guard actually wants.
+No changeset in this repo uses `MARK_RAN`, but the two files reach re-run safety by different means and it is worth knowing which is which. The four spine changesets in `001` are guarded `<preConditions onFail="CONTINUE">`: MARK_RAN records the skip permanently, so a database that was merely not-yet-ready at the moment of the check never gets the change at all, while CONTINUE leaves the changeset unlogged and re-evaluated on the next run, which is what a bootstrap guard actually wants. `002` carries no precondition at all, deliberately: it is a single `sqlFile` creating nine objects, and a precondition sampling one of them reads a half-applied file as complete and skips the rest forever (A-81, which left services with tables and no sequences). Its idempotency lives in the DDL instead, `IF NOT EXISTS` on every CREATE, which converges from any partial state.
 
 Key rules: R-04 single writer, R-05 restart-without-duplication, R-15 raw + canonical identity, R-16 launch identity, R-19 file-fatal tier, R-30 boundary file I/O, R-31 filename grammar cross-check, R-33 two-plane failure evidence, R-34 exit-code wiring + prefixed metadata, R-35 synthetic seam contract, R-41 intra-file parallelism + content hash, A-2 V1 fail-closed.
 
@@ -126,6 +130,8 @@ Env over committed dev defaults (precedence: yml default < environment).
 | `DCRE_V1_ENABLED` | `false` | V1 layout gate (A-2: fails closed in production) |
 | `DCRE_PRR_MAX_PARTITIONS` | `5` | Upper bound on the detailStep partition grid (R-41); actual grid = clamp(available CPUs, 1, this) |
 | `DCRE_AGTOPS_DB_URL` | `jdbc:postgresql://localhost:26257/agt_ops?sslmode=disable` | Heartbeat target (`agt_ops.launch_intent`) |
+| `DCRE_AGTOPS_DB_USER` | `root` | Heartbeat DB user |
+| `DCRE_AGTOPS_DB_PASSWORD` | (empty) | Heartbeat DB password |
 | `JOB_NAME` | (unset: heartbeat disabled, seam falls back to `local-prr-<executionId>`) | Set by AGT on the K8s Job |
 
 ## Testing
@@ -210,6 +216,6 @@ AGT launches PRR as an ephemeral K8s Job per registered ENDO arrival: the JobPar
 
 - Orchestrator: [dcre-agt](https://github.com/sean-huni/dcre-agt)
 - Request DAG stages: [dcre-crr](https://github.com/sean-huni/dcre-crr), [dcre-ctv](https://github.com/sean-huni/dcre-ctv), [dcre-cde](https://github.com/sean-huni/dcre-cde) (DC only), [dcre-crw](https://github.com/sean-huni/dcre-crw) (collections writer), [dcre-cir](https://github.com/sean-huni/dcre-cir), [dcre-ais](https://github.com/sean-huni/dcre-ais) (payments only)
-- Payments counterparts: `dcre-prr` (this repo). PTV, PAI, PRW and PIR have no repositories yet; they are design sequencing steps 3 through 5.
+- Payments counterparts: `dcre-prr` (this repo). PTV, PRW and PIR have no repositories yet. PAI does have one, `dcre-ais` listed above, because PAI IS `ais` misnamed and step 3 renames and retargets it rather than building it. All four are design sequencing steps 3 through 5.
 - Platform libs: [dcre-platform-model](https://github.com/sean-huni/dcre-platform-model), [dcre-platform-files](https://github.com/sean-huni/dcre-platform-files), [dcre-platform-batch](https://github.com/sean-huni/dcre-platform-batch), [dcre-platform-persistence](https://github.com/sean-huni/dcre-platform-persistence). `platform-copybook`, which this repo depends on directly, has NO remote and is deliberately unlinked: it lives only in the local `platform/` tree and publishes to Maven Local.
 - Support: [dcre-infra](https://github.com/sean-huni/dcre-infra), [dcre-fixture-toolkit](https://github.com/sean-huni/dcre-fixture-toolkit), [dcre-design-register](https://github.com/sean-huni/dcre-design-register)
