@@ -28,6 +28,7 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest(properties = {"spring.batch.job.enabled=false"})
@@ -328,6 +329,14 @@ class PrrJobTest {
                 FROM tx_entry WHERE arrival_id=? AND sequence=1""";
         String dcRow = jdbc.queryForObject(projection, String.class, ARRIVAL);
         String endoRow = jdbc.queryForObject(projection, String.class, ENDO_ARRIVAL);
+        // Four of the eight concatenated columns are nullable, and `||` with any
+        // NULL yields NULL in CockroachDB, so a mapping regression that NULLed one
+        // for BOTH books would make the comparison below assertEquals(null, null)
+        // and pass. The amount_raw control further down cannot see that mode:
+        // amount_raw is NOT NULL. These two assertions are what close it.
+        assertNotNull(dcRow, "the DC projection must not collapse to NULL: a single"
+                + " NULL column NULLs the whole || concatenation");
+        assertNotNull(endoRow, "the ENDO projection must not collapse to NULL");
         assertEquals(dcRow, endoRow,
                 "the same physical record must persist to the same column values whichever"
                         + " family's book carried it");

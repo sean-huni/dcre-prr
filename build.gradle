@@ -46,5 +46,10 @@ test { useJUnitPlatform() }
  */
 tasks.named('bootBuildImage') {
     imageName = "dcre-prr:${project.version}"
+    // BOTH keys are pinned on purpose (rules/be/java/build.md). Leaving the
+    // builder unset resolves correctly today, but only via the Boot plugin's
+    // FLOATING default, so a plugin bump would silently change the base image of
+    // the repo whose stated job is to be the fleet's Paketo exemplar.
+    builder = 'paketobuildpacks/builder-noble-java-tiny'
     environment = ['BP_JVM_VERSION': '25']
 }

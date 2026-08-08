@@ -7,13 +7,22 @@ Payments Request Reader: boundary stage that ingests OnHost ENDO copybook files 
 PRR is the first stage of the ENDO payments request DAG:
 
 ```
-ENDO payments  onhost-req-endo:  PRR -> PTV -> PAI -> PIR      (immediate: no CDE, no mandate gate)
+ENDO payments  onhost-req-endo:  PRR -> PTV -> PAI -> { PRW -> Fintegrate request
+                                                     || PIR -> OnHost response }
+                                 (immediate: no CDE, no mandate gate; PIR is the responder,
+                                  PRW and PIR are BOTH terminal, Emission.NONE)
+
 DC collections onhost-req:       CRR -> CTV -> { CDE || CIR }  (CDE future-dates the work)
 ```
 
-PTV, PAI and PIR are the payments-side counterparts of CTV, AIS and CIR; none of them exists yet, and each
-needs its own task (design sequencing steps 3 through 10). Until they do, ENDO arrivals continue down the
-collections DAG. OnHost drops a fixed-width copybook file into the per-client exchange (`onhost-req-endo/in`), AGT registers the arrival and launches PRR as a short-lived Kubernetes Job with `arrival.id` as the identifying JobParameter (R-16). PRR parses the header, runs the file-fatal structural tier (R-19), then ingests every detail record; it is the single writer of the payments spine (R-04), and every downstream stage transitions via the database, never via files (R-30).
+PTV, PAI, **PRW** and PIR are the payments-side counterparts of CTV, AIS, CRW and CIR. PRW is easy to
+drop and must not be: it generates and writes the Fintegrate request to the directory, so without it
+the payments leg has a responder and no writer at all. The arm forks after PAI exactly as the
+collections arm forks after CTV. None of these four stages exists yet, and each needs its own task
+(design sequencing steps 3 through 10; step 4 exists solely to build PRW on an extracted
+`platform-fintegrate`). Until they land, ENDO arrivals continue down the collections DAG.
+
+OnHost drops a fixed-width copybook file into the per-client exchange (`onhost-req-endo/in`), AGT registers the arrival and launches PRR as a short-lived Kubernetes Job with `arrival.id` as the identifying JobParameter (R-16). PRR parses the header, runs the file-fatal structural tier (R-19), then ingests every detail record; it is the single writer of the payments spine (R-04), and every downstream stage transitions via the database, never via files (R-30).
 
 ### Why this repo exists: the payments split
 
@@ -21,7 +30,7 @@ PRR was forked from [dcre-crr](https://github.com/sean-huni/dcre-crr) and then R
 
 Before the split, one reader and one database served both families: AGT passed a `flow` launch argument, CRR stamped `tx_header.flow` as `COL` or `PAY`, and downstream arms selected on that column (SCRUM-69). **PRR carries no flow discriminator at all.** The database is the discriminator now: a row in `dcre_pay.tx_header` IS a payment, so `tx_header` here has no `flow` column, `HeaderService` takes no `flow` parameter, and there is no `COL` branch to take.
 
-Five assertions across two test classes enforce that, each seen red on its own. They deliberately attack the concept from four different directions, because a scan for string literals is satisfied by DELETING three literals rather than by removing the concept: in CRR the flow token appears in four main sources and those three literals live in only one of them, so a partial strip leaving the entity field, the upsert column or the job parameter would still have gone green.
+Five assertions across two test classes enforce that, each seen red on its own. They deliberately attack the concept from five different directions, because a scan for string literals is satisfied by DELETING three literals rather than by removing the concept: in CRR the flow token appears in four main sources and those three literals live in only one of them, so a partial strip leaving the entity field, the upsert column or the job parameter would still have gone green.
 
 | Assertion | What it closes |
 |---|---|
@@ -133,18 +142,62 @@ Fixtures: `src/test/resources/dcre_copybook_v{1,2,3}_*.txt`, byte-identical copi
 
 ## Local cluster deployment
 
+Both commands below have been run against `dcre-dev` in this exact form, from a state where the
+image was absent from the node, and the image is on the node afterwards:
+
 ```bash
-./gradlew bootBuildImage          # -> dcre-prr:2.0, via Paketo buildpacks
+./gradlew bootBuildImage                            # -> dcre-prr:2.0, via Paketo buildpacks
 kind load docker-image --name dcre-dev dcre-prr:2.0
 ```
 
 **PRR builds its image with Paketo buildpacks and ships no Dockerfile.** The estate mandate is that all backend images go through Paketo, never a hand-rolled prod JVM Dockerfile, and a brand-new repo with zero tags and no published image is the cheapest adoption point in the fleet: nothing has to stay byte-compatible and there is no rollback to preserve. The rest of the DCRE fleet still ships CRR's hand-rolled `eclipse-temurin:25-jre-alpine` Dockerfile and migrates separately; PRR is the exemplar that migration follows.
 
-`BP_JVM_VERSION=25` is set in `build.gradle` and verified in the built image: `Starting PrrApplication v2.0 using Java 25.0.4`. The image is `linux/arm64`, matching the `dcre-dev` kind nodes; do NOT force `--platform linux/amd64` for this cluster, its nodes are arm64 and an amd64 image fails at pull time with `no match for platform in manifest`. Paketo's image is larger than the hand-rolled one (680MB vs 420MB locally), which is the cost of the reproducible build and the SBOM.
+Both `builder` and `BP_JVM_VERSION` are pinned in `build.gradle`. The builder pin matters even though
+it resolves identically today: unset, it comes from the Boot plugin's FLOATING default, so a plugin
+bump would silently change the base image of the repo whose job is to be the exemplar. Verified in
+the built image: `Starting PrrApplication v2.0 using Java 25.0.4`, and pinning the builder produced a
+byte-identical image ID, so the pin is a no-op now and a guard later.
+
+The image is `linux/arm64`, matching the `dcre-dev` kind nodes. Do NOT force `--platform linux/amd64`
+for this cluster: its nodes are arm64 and an amd64 image fails at pull time with
+`no match for platform in manifest`, minutes after a release looks complete.
+
+### Why `kind load docker-image` works here when the estate says it fails
+
+`dcre-infra/scripts/kind-up.sh` records that `kind load docker-image` fails against Docker's
+containerd image store, because a **multi-arch index** references per-platform blobs that
+`docker save` omits (`ctr: content digest ... not found`, kind#3510). That note is correct and it
+does not apply to this image. This daemon IS on the containerd store
+(`driver-type io.containerd.snapshotter.v1`), and the plain form still succeeds, because a
+`bootBuildImage` image is built for one platform only: its archive carries a single manifest, so
+every blob the index references is present.
+
+The archive form the sibling script uses also works and is the fallback if you ever publish a
+multi-arch PRR image:
+
+```bash
+docker save --platform "linux/$(docker version --format '{{.Server.Arch}}')" dcre-prr:2.0 \
+  | kind load image-archive /dev/stdin --name dcre-dev
+```
+
+Both forms were executed, each from a node state where the image had been removed first, so neither
+result is a no-op. The on-node image ID differs from the local one (`857103cdfa03` vs `b8dc46a17d2c`)
+because containerd recomputes the config digest on import; the labels, architecture and entrypoint
+match the local image exactly.
+
+Size, on the node, is the number that matters for load and pull time: `dcre-prr:2.0` is **326MB**
+against the hand-rolled fleet images' **95.3MB**. That is the real cost of the reproducible build
+and the SBOM, and it is worth knowing before the fleet migration rather than after it.
 
 The image is tagged from the Gradle project version, which stays `2.0` to match uniform fleet versioning. Release image tags are cut by the fleet release process; this repo has no tags yet, so there is no `2.x.y` image tag to build here until it does.
 
-AGT launches PRR as an ephemeral K8s Job per registered ENDO arrival: the JobParameters arrive as program args and `JOB_NAME` is set in the Job env. **The AGT wiring and the emission-gate flip are NOT part of this phase**; PRR is buildable and verifiable standalone, and AGT still routes ENDO arrivals to CRR until that work lands.
+**`dcre-infra/README.md` publishes a fleet build recipe (`./gradlew bootJar && docker build ...`)
+that does not work for PRR**, since there is no Dockerfile here. That is a documentation
+inconsistency, not a broken pipeline: no script, yml or Makefile in the DCRE tree or in dcre-infra
+references a per-repo Dockerfile, so nothing silently skips PRR. The correction to that file belongs
+to its owner and is routed separately.
+
+AGT launches PRR as an ephemeral K8s Job per registered ENDO arrival: the JobParameters arrive as program args and `JOB_NAME` is set in the Job env, and the Paketo launcher passes them through unchanged (verified by running the image with all three). **The AGT wiring and the emission-gate flip are NOT part of this phase**; PRR is buildable and verifiable standalone, and AGT still routes ENDO arrivals to CRR until that work lands.
 
 ## Related repositories
 
