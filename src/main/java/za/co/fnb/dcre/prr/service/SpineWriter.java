@@ -21,7 +21,8 @@ import java.util.UUID;
  * are batched per chunk (R-41). Sequence derives from the record's position
  * in the file (recordIndex + 1), never from shared counters, so partitioned
  * ingest is deterministic (R-41). Each row carries a SHA-256 content hash
- * over the essential business fields for CTV's in-file dup scan (R-41).
+ * over the essential business fields for PTV's in-file dup scan (R-41): PRR
+ * writes dcre_pay, so its consumer is the PAYMENTS validator, not CTV.
  * V1 (161) fails closed unless dcre.v1-enabled (A-2). V3 (204) is the V2 body
  * plus a trailing mandate_ref(35), the canonical COLLECTION-to-mandate link
  * (M10). It is mapped here because DETAIL_V3 is one physical layout shared by

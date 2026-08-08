@@ -12,13 +12,17 @@ ENDO payments  onhost-req-endo:  PRR -> PTV -> PAI -> { PRW -> Fintegrate reques
                                  (immediate: no CDE, no mandate gate; PIR is the responder,
                                   PRW and PIR are BOTH terminal, Emission.NONE)
 
-DC collections onhost-req:       CRR -> CTV -> { CDE || CIR }  (CDE future-dates the work)
+DC collections onhost-req:       CRR -> CTV -> { CDE -> CRW -> Fintegrate request
+                                                || CIR -> OnHost response }
+                                 (CDE future-dates the work; CRW is the writer, CIR the responder)
 ```
 
-PTV, PAI, **PRW** and PIR are the payments-side counterparts of CTV, AIS, CRW and CIR. PRW is easy to
-drop and must not be: it generates and writes the Fintegrate request to the directory, so without it
-the payments leg has a responder and no writer at all. The arm forks after PAI exactly as the
-collections arm forks after CTV. None of these four stages exists yet, and each needs its own task
+PTV, PAI, **PRW** and PIR are the payments-side counterparts of CTV, AIS, **CRW** and CIR. CDE is the
+only stage with no payments counterpart, which is what "immediate" means. Both writers are easy to
+drop and neither must be: CRW and PRW generate and write the Fintegrate request to the directory, so
+a leg rendered without its writer reads as a responder and nothing else. Each arm forks into a
+writer branch and a responder branch, payments after PAI and collections after CTV, with CDE sitting
+between the collections fork and CRW. None of these four stages exists yet, and each needs its own task
 (design sequencing steps 3 through 10; step 4 exists solely to build PRW on an extracted
 `platform-fintegrate`). Until they land, ENDO arrivals continue down the collections DAG.
 
@@ -202,6 +206,7 @@ AGT launches PRR as an ephemeral K8s Job per registered ENDO arrival: the JobPar
 ## Related repositories
 
 - Orchestrator: [dcre-agt](https://github.com/sean-huni/dcre-agt)
-- Request DAG stages: [dcre-crr](https://github.com/sean-huni/dcre-crr), [dcre-ctv](https://github.com/sean-huni/dcre-ctv), [dcre-cde](https://github.com/sean-huni/dcre-cde) (DC only), [dcre-cir](https://github.com/sean-huni/dcre-cir), [dcre-ais](https://github.com/sean-huni/dcre-ais) (payments only)
+- Request DAG stages: [dcre-crr](https://github.com/sean-huni/dcre-crr), [dcre-ctv](https://github.com/sean-huni/dcre-ctv), [dcre-cde](https://github.com/sean-huni/dcre-cde) (DC only), [dcre-crw](https://github.com/sean-huni/dcre-crw) (collections writer), [dcre-cir](https://github.com/sean-huni/dcre-cir), [dcre-ais](https://github.com/sean-huni/dcre-ais) (payments only)
+- Payments counterparts: `dcre-prr` (this repo). PTV, PAI, PRW and PIR have no repositories yet; they are design sequencing steps 3 through 5.
 - Platform libs: [dcre-platform-model](https://github.com/sean-huni/dcre-platform-model), [dcre-platform-files](https://github.com/sean-huni/dcre-platform-files), [dcre-platform-batch](https://github.com/sean-huni/dcre-platform-batch), [dcre-platform-persistence](https://github.com/sean-huni/dcre-platform-persistence)
 - Support: [dcre-infra](https://github.com/sean-huni/dcre-infra), [dcre-fixture-toolkit](https://github.com/sean-huni/dcre-fixture-toolkit), [dcre-design-register](https://github.com/sean-huni/dcre-design-register)
