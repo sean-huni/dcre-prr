@@ -122,9 +122,9 @@ Env over committed dev defaults (precedence: yml default < environment).
 
 | Env | Default | Purpose |
 |---|---|---|
-| `DCRE_PAY_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable` | Payments DB (CockroachDB) |
-| `DCRE_PAY_DB_USER` | `root` | DB user |
-| `DCRE_PAY_DB_PASSWORD` | (empty) | DB password |
+| `DCRE_DB_URL` | `jdbc:postgresql://localhost:26257/dcre_pay?sslmode=disable` | Payments DB (CockroachDB) |
+| `DCRE_DB_USER` | `root` | DB user |
+| `DCRE_DB_PASSWORD` | (empty) | DB password |
 | `DCRE_EXCHANGE_ROOT` | `../../../../../../infra/dcre-infra/exchange` | Exchange root for the outcome seam file |
 | `DCRE_AMOUNT_SCALE` | `2` | MoneyText scale (SYNTHETIC-CONTRACT while A-1 is open) |
 | `DCRE_V1_ENABLED` | `false` | V1 layout gate (A-2: fails closed in production) |
