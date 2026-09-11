@@ -35,10 +35,13 @@ public class LineRangePartitioner implements Partitioner {
     static final String LRECL = "lrecl";
     static final String BASE_OFFSET = "baseOffset";
 
+    /** The launch parameter naming the file to partition; AGT supplies it on every launch. */
+    static final String INPUT_FILE = "input.file";
+
     private final Path input;
 
-    public LineRangePartitioner(@Value("#{jobParameters['input.file']}") String inputFile) {
-        this.input = Path.of(inputFile);
+    public LineRangePartitioner(@Value("#{jobParameters['" + INPUT_FILE + "']}") String inputFile) {
+        this.input = Path.of(requiredInputFile(inputFile));
     }
 
     @Override
@@ -113,5 +116,26 @@ public class LineRangePartitioner implements Partitioner {
             parts.put("partition" + index, context);
         }
         return parts;
+    }
+
+    /**
+     * Names the missing parameter, and this stage, before the value can reach {@link Path#of}.
+     * Unguarded, a launch without {@code input.file} dies inside the JDK's filesystem code with a
+     * NullPointerException that names neither the parameter, nor this stage, nor the job, so the
+     * operator reading that log learns nothing about what to supply. Blank counts as missing: a
+     * blank string builds an empty path with no NullPointerException at all and then fails
+     * somewhere else entirely, which is the quieter half of the same defect.
+     *
+     * <p>Deliberately NOT a {@code FileFatalException}: that type is a BUSINESS verdict about the
+     * file's contents and is routed to a NACK. A parameter the launch never supplied is an
+     * operator error about the launch, and there is no file to pass judgement on.
+     */
+    private static String requiredInputFile(String value) {
+        if (value == null || value.isBlank()) {
+            throw new IllegalArgumentException("PRR requires the job parameter '" + INPUT_FILE
+                    + "': it was " + (value == null ? "not supplied" : "blank ('" + value + "')")
+                    + ". Launch the job with " + INPUT_FILE + "=<path to the file to partition>.");
+        }
+        return value;
     }
 }
