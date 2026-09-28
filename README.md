@@ -1,8 +1,19 @@
 # dcre-prr
 
+> Part of the DCRE fleet. For the fleet map, the rulings and the diagrams that specify every stage, start at the [DCRE design register](https://github.com/sean-huni/dcre-design-register); the complete list of live repositories is its [Repositories](https://github.com/sean-huni/dcre-design-register#repositories) table.
+
 Payments Request Reader: boundary stage that ingests OnHost ENDO copybook files into the **payments** spine (`tx_header` / `tx_entry`) in `dcre_pay`.
 
 ## What it does
+
+| | |
+| --- | --- |
+| Stage code | `PRR` (AGT `Stage.PRR`) |
+| Family / leg | payments (ENDO), REQ |
+| Trigger | arrival-launched: one Kubernetes Job per OnHost file on `<client>/onhost-req-endo/in` |
+| Upstream | none in the DAG: PRR is the entry (`RouteDags.ENDO`, checked 2026-09-28) |
+| Downstream | `PTV` |
+| Diagram sheet | `dcre-payments-req` in the design register |
 
 PRR is the first stage of the ENDO payments request DAG:
 
@@ -80,7 +91,11 @@ The shared `OutcomeSeamListener` writes the business-verdict seam file (SYNTHETI
 
 ### Database and batch metadata
 
-PRR owns `dcre_pay` outright. Liquibase owns the schema, with per-service history tables (`prr_databasechangelog` / `prr_databasechangeloglock`):
+Database today: `dcre_pay`, via `DCRE_DB_URL` / `DCRE_DB_USER` / `DCRE_DB_PASSWORD`; a second
+datasource, `DCRE_AGTOPS_DB_URL` / `_USER` / `_PASSWORD`, targets `agt_ops` for the `HeartbeatWriter`
+liveness stamp. PRR reads no table: its input is the claimed copybook file. It writes `tx_header`
+and `tx_entry` (single writer of the payments spine, R-04) plus `PRR_BATCH_*` metadata; other
+payments stages own the rest of `dcre_pay`. Liquibase owns the schema, with per-service history tables (`prr_databasechangelog` / `prr_databasechangeloglock`):
 
 - `2026/08/001-pay-spine.xml`: `tx_header` (UNIQUE arrival_id; raw + canonical msg_id per R-15; **no flow column**) and `tx_entry` (UNIQUE arrival_id/sequence; amount_raw kept alongside the config-scaled DECIMAL while A-1 is open; `mandate_ref`, a V3 field of the shared book that ENDO does not populate (M10 is the COLLECTION-to-mandate link and the mandate gate is DC-only per R-19, so expect it NULL on every payment row); `content_hash` plus the covering index `(arrival_id, content_hash, sequence)`). Pure typed XML, BaseEntity columns declared in the `createTable` rather than bolted on by a later ALTER, so this one FILE (four changesets) replaces the four CRR changelogs that between them build the same schema: `001-spine`, `003-layering`, `004-content-hash`, `006-mandate-ref`.
 - `2026/08/002-batch-metadata.xml`: Liquibase-owned copy of the Spring Batch 6.0.4 postgres DDL (via `sqlFile`, vendored as `batch-metadata-prr.sql`), prefixed `PRR_BATCH_`, EXIT_MESSAGE widened to TEXT so CRDB-driver cause chains are never truncated (A-39b).
@@ -91,7 +106,7 @@ Key rules: R-04 single writer, R-05 restart-without-duplication, R-15 raw + cano
 
 ## Prerequisites
 
-- Java 25 (`.sdkmanrc` pins `25-tem`)
+- Java 25 (`.sdkmanrc` pins `java=25-tem`); Gradle 9.5.1 via the committed wrapper
 - Docker (Testcontainers tests and image build)
 - Platform libs published to Maven Local (no remote repository): `za.co.fnb.dcre:platform-copybook:0.2.0`, `platform-persistence:0.1.0`, `platform-batch:0.1.0`. Run `./gradlew publishToMavenLocal` in each platform repo; publish chain `dcre-platform-model` then `dcre-platform-files` then `dcre-platform-batch`, with `platform-persistence` and `platform-copybook` standalone. This repo declares `platform-copybook` (`Layouts`, `LayoutResolver`, `CopybookReader`, `FixedWidthRecord`), `platform-batch` (`ExitCodeMain`, `OutcomeSeamListener`, `StaleExecutionSweeper`, `CrdbRetryExceptionHandler`, `PartitionSizer`, `HeartbeatWriter`; `R31Filename` / `MoneyText` / `OpaqueRef` arrive transitively) and `platform-persistence` (`BaseEntity`, `JdbcConfig`).
 - A reachable CockroachDB for a real local run (committed default: `localhost:26257`, database `dcre_pay`); the dcre-infra kind cluster provides one.
@@ -128,16 +143,19 @@ Env over committed dev defaults (precedence: yml default < environment).
 | `DCRE_AGTOPS_DB_PASSWORD` | (empty) | Heartbeat DB password |
 | `JOB_NAME` | (unset: heartbeat disabled, seam falls back to `local-prr-<executionId>`) | Set by AGT on the K8s Job |
 
+This table is the documented set, not a closed total: Spring Boot relaxed binding lets any property
+be overridden by its environment-variable form.
+
 ## Testing
 
 ```bash
 ./gradlew clean build
 ```
 
-46 tests, Docker required: integration tests run on Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3`.
+Docker required: integration tests run on Testcontainers CockroachDB `cockroachdb/cockroach:v26.2.3`.
 
 - `PayFlowOnlyTest` (4): the flow concept is gone from the sources, the entity's declared fields, the resources and the launch surface. See the table above.
-- `PrrJobTest` (10): the DC V2 sample parses into 1 header + 30 entries with MoneyText scaling; the same identity refuses a second run without duplicating (R-05/R-16); a V1 file completes as FILE_FATAL with zero details persisted; an unpadded-header file and a non-UTF-8 byte both ingest byte-exactly; the V3 DC fixture carries `mandate_ref` while a V2 book leaves it NULL, which exercises the column mapping without contradicting the production expectation that ENDO rows never populate it; the outcome seam is byte-exact for both verdicts; and the ENDO book ingests to 1 header + 12 entries whose shared columns are byte-equal to the DC ingest's, with every `mandate_ref` NULL.
+- `PrrJobTest`: the DC V2 sample parses into 1 header + 30 entries with MoneyText scaling; the same identity refuses a second run without duplicating (R-05/R-16); a V1 file completes as FILE_FATAL with zero details persisted; an unpadded-header file and a non-UTF-8 byte both ingest byte-exactly; the V3 DC fixture carries `mandate_ref` while a V2 book leaves it NULL, which exercises the column mapping without contradicting the production expectation that ENDO rows never populate it; the outcome seam is byte-exact for both verdicts; and the ENDO book ingests to 1 header + 12 entries whose shared columns are byte-equal to the DC ingest's, with every `mandate_ref` NULL.
 - `EndoDcIdentityTest` (4): both books read through the same resolver. Record 0 of each is 169 bytes and still resolves to `Layouts.HEADER`, which only its INDEX can decide; the two headers are byte-identical except `tx_count`; detail 1 slices identically across both. The fields the fixtures deliberately differ on are asserted DIFFERENT, so none of the equalities can pass by both paths reading one file.
 - `PrrPartitionDeterminismTest`: the same fixture under `dcre.prr.max-partitions` 1 vs 5 in two `@Nested` contexts yields identical `(sequence, e2e, content_hash)` rows (R-41 determinism).
 - `PrrJobConfigRetryTest`: headerStep re-runs the tasklet on commit-time CRDB 40001 serialization aborts.
@@ -157,7 +175,7 @@ image was absent from the node, and the image is on the node afterwards:
 kind load docker-image --name dcre-dev dcre-prr:2.0
 ```
 
-**PRR builds its image with Paketo buildpacks and ships no Dockerfile.** The estate mandate is that all backend images go through Paketo, never a hand-rolled prod JVM Dockerfile, and a brand-new repo with zero tags and no published image is the cheapest adoption point in the fleet: nothing has to stay byte-compatible and there is no rollback to preserve. The rest of the DCRE fleet still ships CRR's hand-rolled `eclipse-temurin:25-jre-alpine` Dockerfile and migrates separately; PRR is the exemplar that migration follows.
+**PRR builds its image with Paketo buildpacks and ships no Dockerfile.** The estate mandate is that all backend images go through Paketo, never a hand-rolled prod JVM Dockerfile, and a brand-new repo with zero tags and no published image is the cheapest adoption point in the fleet: nothing has to stay byte-compatible and there is no rollback to preserve. The collections and mandates stages and `payments/pai` still ship a hand-rolled Dockerfile (checked 2026-09-28) and migrate separately; PRR is the exemplar that migration follows.
 
 Both `builder` and `BP_JVM_VERSION` are pinned in `build.gradle`. The builder pin matters even though
 it resolves identically today: unset, it comes from the Boot plugin's FLOATING default, so a plugin
@@ -199,12 +217,23 @@ and the SBOM, and it is worth knowing before the fleet migration rather than aft
 The image is tagged from the Gradle project version, which stays `2.0` to match uniform fleet versioning. Release image tags are cut by the fleet release process; this repo has no tags yet, so there is no `2.x.y` image tag to build here until it does.
 
 **`dcre-infra/README.md` publishes a fleet build recipe (`./gradlew bootJar && docker build ...`)
-that does not work for PRR**, since there is no Dockerfile here. That is a documentation
+that does not work for PRR** (checked 2026-09-28), since there is no Dockerfile here. That is a documentation
 inconsistency, not a broken pipeline: no script, yml or Makefile in the DCRE tree or in dcre-infra
 references a per-repo Dockerfile, so nothing silently skips PRR. The correction to that file belongs
 to its owner and is routed separately.
 
-AGT launches PRR as an ephemeral K8s Job per registered ENDO arrival: the JobParameters arrive as program args and `JOB_NAME` is set in the Job env, and the Paketo launcher passes them through unchanged (verified by running the image with all three). **The AGT wiring and the emission-gate flip are NOT part of this phase**; PRR is buildable and verifiable standalone, and AGT still routes ENDO arrivals to CRR until that work lands.
+```bash
+kubectl set env -n dcre deploy/dcre-agt AGT_PRR_IMAGE=dcre-prr:2.0
+```
+
+AGT on `origin/dev` (checked 2026-09-28) routes every `onhost-req-endo` arrival to PRR and launches
+it as an ephemeral K8s Job in the `dcre-pay` namespace, resolving the image from `AGT_PRR_IMAGE`
+(empty means launch-disabled). `dcre-infra`'s `scripts/switch-version.sh` does not export that
+variable (its roster predates the payments split), hence the explicit `kubectl set env`. Program
+args: `arrival.id=<uuid>` (identifying), `input.file=<claimed path>` and `original.name=<physical
+filename>` (non-identifying); no `flow` arg. Env: `JOB_NAME`, `DCRE_DB_URL` (the `dcre_pay` URL),
+`DCRE_EXCHANGE_ROOT=/exchange`, `DCRE_AGTOPS_DB_URL`, `DCRE_AGTOPS_DB_USER`. The Paketo launcher
+passes program args through unchanged (verified by running the image with all three).
 
 ## Related repositories
 
