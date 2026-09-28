@@ -214,8 +214,6 @@ AGT launches PRR as an ephemeral K8s Job per registered ENDO arrival: the JobPar
 
 ## Related repositories
 
-- Orchestrator: [dcre-agt](https://github.com/sean-huni/dcre-agt)
-- Request DAG stages: [dcre-crr](https://github.com/sean-huni/dcre-crr), [dcre-ctv](https://github.com/sean-huni/dcre-ctv), [dcre-cde](https://github.com/sean-huni/dcre-cde) (DC only), [dcre-crw](https://github.com/sean-huni/dcre-crw) (collections writer), [dcre-cir](https://github.com/sean-huni/dcre-cir), [dcre-ais](https://github.com/sean-huni/dcre-ais) (payments only)
-- Payments counterparts: `dcre-prr` (this repo). PTV, PRW and PIR have no repositories yet. PAI does have one, `dcre-ais` listed above, because PAI IS `ais` misnamed and step 3 renames and retargets it rather than building it. All four are design sequencing steps 3 through 5.
-- Platform libs: [dcre-platform-model](https://github.com/sean-huni/dcre-platform-model), [dcre-platform-files](https://github.com/sean-huni/dcre-platform-files), [dcre-platform-batch](https://github.com/sean-huni/dcre-platform-batch), [dcre-platform-persistence](https://github.com/sean-huni/dcre-platform-persistence). `platform-copybook`, which this repo depends on directly, has NO remote and is deliberately unlinked: it lives only in the local `platform/` tree and publishes to Maven Local.
-- Support: [dcre-infra](https://github.com/sean-huni/dcre-infra), [dcre-fixture-toolkit](https://github.com/sean-huni/dcre-fixture-toolkit), [dcre-design-register](https://github.com/sean-huni/dcre-design-register)
+The complete, current list of live DCRE repositories (stage services, orchestrator, platform libraries, infra and tooling) lives in one place: the [DCRE design register README](https://github.com/sean-huni/dcre-design-register#repositories). Deprecated and archived repositories are deliberately absent from it. This README does not copy that list, so it cannot drift.
+
+- Design register: https://github.com/sean-huni/dcre-design-register (start at `docs/specs/DESIGN-REGISTER.md`; the diagrams in `docs/diagrams/` are the specification)
