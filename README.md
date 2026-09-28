@@ -18,20 +18,14 @@ DC collections onhost-req:       CRR -> CTV -> { CDE -> CRW -> Fintegrate reques
 ```
 
 PTV, **PRW** and PIR are the payments-side counterparts of CTV, **CRW** and CIR. **PAI is not a
-counterpart of anything**: it already IS `ais`, under the wrong name, so step 3 renames and retargets
-it at `dcre_pay` rather than building it. `ais` is a payments stage today (it sits in `RouteDags.ENDO`,
-never in the DC route), which is why it is marked payments-only in the repository list below. CDE is
+counterpart of anything**: it is the former `ais` stage, renamed and retargeted at `dcre_pay` rather
+than rebuilt, and it sits only in the ENDO route, never in the DC route. CDE is
 the only collections stage with no payments counterpart, which is what "immediate" means. Both
 writers are easy to drop and neither must be: CRW and PRW generate and write the Fintegrate request
 to the directory, so a leg rendered without its writer reads as a responder and nothing else. Each
 arm forks into a writer branch and a responder branch, payments after PAI and collections after CTV,
-with CDE sitting between the collections fork and CRW. Of the four, only PAI exists today, as
-`dcre-ais`; PTV, PRW and PIR do not exist at all. Their tasks are design
-sequencing steps 3 through 5 (PTV and PAI at 3, PRW at 4 on an extracted `platform-fintegrate`, PIR
-at 5); steps 6 through 10 are the broader arc that follows, namely the AGT wiring, the end-to-end
-proof under the chaos gate, the response leg with its own stage codes, the collections renames, and
-deleting payments code from collections. Until they land, ENDO arrivals continue down the
-collections DAG.
+with CDE sitting between the collections fork and CRW. All four payments stages (PTV, PAI, PRW, PIR)
+exist as their own repositories and ENDO arrivals run the payments DAG over `dcre_pay`.
 
 OnHost drops a fixed-width copybook file into the per-client exchange (`onhost-req-endo/in`), AGT registers the arrival and launches PRR as a short-lived Kubernetes Job with `arrival.id` as the identifying JobParameter (R-16). PRR parses the header, runs the file-fatal structural tier (R-19), then ingests every detail record; it is the single writer of the payments spine (R-04), and every downstream stage transitions via the database, never via files (R-30).
 
