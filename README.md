@@ -109,7 +109,8 @@ Key rules: R-04 single writer, R-05 restart-without-duplication, R-15 raw + cano
 - Java 25 (`.sdkmanrc` pins `java=25-tem`); Gradle 9.5.1 via the committed wrapper
 - Docker (Testcontainers tests and image build)
 - Platform libs published to Maven Local (no remote repository): `za.co.fnb.dcre:platform-copybook:0.2.0`, `platform-persistence:0.1.0`, `platform-batch:0.1.0`. Run `./gradlew publishToMavenLocal` in each platform repo; publish chain `dcre-platform-model` then `dcre-platform-files` then `dcre-platform-batch`, with `platform-persistence` and `platform-copybook` standalone. This repo declares `platform-copybook` (`Layouts`, `LayoutResolver`, `CopybookReader`, `FixedWidthRecord`), `platform-batch` (`ExitCodeMain`, `OutcomeSeamListener`, `StaleExecutionSweeper`, `CrdbRetryExceptionHandler`, `PartitionSizer`, `HeartbeatWriter`; `R31Filename` / `MoneyText` / `OpaqueRef` arrive transitively) and `platform-persistence` (`BaseEntity`, `JdbcConfig`).
-- A reachable CockroachDB for a real local run (committed default: `localhost:26257`, database `dcre_pay`); the dcre-infra kind cluster provides one.
+- A reachable CockroachDB for a real local run (committed default: `localhost:26257`, database `dcre_pay`); the dcre-infra kind cluster provides the CockroachDB instance, not this database.
+- The `dcre_pay` database must be created by hand (`CREATE DATABASE IF NOT EXISTS dcre_pay;`): dcre-infra's `scripts/crdb-init.sql` creates only `dcre_col`, `agt_ops` and `dcre_man` (checked 2026-09-28).
 
 ## Quickstart
 
@@ -214,7 +215,7 @@ Size, on the node, is the number that matters for load and pull time: `dcre-prr:
 against the hand-rolled fleet images' **95.3MB**. That is the real cost of the reproducible build
 and the SBOM, and it is worth knowing before the fleet migration rather than after it.
 
-The image is tagged from the Gradle project version, which stays `2.0` to match uniform fleet versioning. Release image tags are cut by the fleet release process; this repo has no tags yet, so there is no `2.x.y` image tag to build here until it does.
+The image is tagged from the Gradle project version, `2.0`, the same project version the other stage services carry. This repo has no git release tags (`git ls-remote --tags`, checked 2026-09-28), so there is no `2.x.y` image tag to build here until one is cut.
 
 **`dcre-infra/README.md` publishes a fleet build recipe (`./gradlew bootJar && docker build ...`)
 that does not work for PRR** (checked 2026-09-28), since there is no Dockerfile here. That is a documentation
